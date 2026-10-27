@@ -1,3 +1,4 @@
+
 name: Build ImgForge Android APK
 
 on:
@@ -29,33 +30,116 @@ jobs:
 
       - name: Extract ImgForge source
         run: |
+          set -eu
           mkdir -p extracted
           unzip -q ImgForgeAndroid_source.zip -d extracted
 
-      - name: Patch Java Compatibility & Build APK
+      - name: Fix JVM targets and build APK
+        shell: bash
         run: |
-          PROJECT_DIR=$(find extracted -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1 | xargs dirname)
-          echo "Found Gradle project at: $PROJECT_DIR"
-          
-          # Updated glob pattern to target all build.gradle and build.gradle.kts files
-          python3 - <<EOF
-          import glob, re
-          for filepath in glob.glob(f'$PROJECT_DIR/**/build.gradle*', recursive=True):
-              print(f"Checking {filepath}")
-              with open(filepath, 'r') as f:
-                  text = f.read()
-              text = text.replace('VERSION_1_8', 'VERSION_17')
-              text = re.sub(r'(sourceCompatibility|targetCompatibility)\s*=?\s*([\'"])1\.8\2', r'\1 = \217\2', text)
-              text = re.sub(r'(sourceCompatibility|targetCompatibility)\s*=?\s*1\.8', r'\1 = 17', text)
-              text = re.sub(r'jvmTarget\s*=?\s*([\'"])1\.8\1', r'jvmTarget = \117\1', text)
-              text = re.sub(r'jvmTarget\s*=?\s*1\.8', r'jvmTarget = "17"', text)
-              with open(filepath, 'w') as f:
-                  f.write(text)
-          print("Successfully patched all build files to Java 17 compatibility.")
-          EOF
+          set -euo pipefail
 
-          echo "sdk.dir=/usr/local/lib/android/sdk" > "$PROJECT_DIR/local.properties"
+          PROJECT_DIR="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)"
+
+          if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
+            echo "ERROR: Gradle project not found inside ImgForgeAndroid_source.zip"
+            echo "ZIP contents:"
+            unzip -l ImgForgeAndroid_source.zip
+            exit 1
+          fi
+
+          echo "Gradle project: $PROJECT_DIR"
+
+          export PROJECT_DIR
+
+          python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_DIR"])
+          files = list(root.rglob("build.gradle")) + list(root.rglob("build.gradle.kts"))
+
+          if not files:
+              raise SystemExit("ERROR: No Gradle build files found.")
+
+          for path in files:
+              text = path.read_text()
+              original = text
+
+              # Normalize Java 8 compatibility constants.
+              text = text.replace("VERSION_1_8", "VERSION_17")
+
+              # Handle Java compatibility declarations in Groovy and Kotlin DSL.
+              text = re.sub(
+                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)JavaVersion\.VERSION_1_8\b',
+                  r'\1JavaVersion.VERSION_17',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)(["\'])1\.8\2',
+                  lambda m: m.group(1) + m.group(2) + "17" + m.group(2),
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)1\.8\b',
+                  r'\g<1>17',
+                  text
+              )
+
+              # Handle Kotlin jvmTarget declarations using either quote style.
+              text = re.sub(
+                  r'(?m)^(\s*jvmTarget\s*=\s*)(["\'])1\.8\2',
+                  lambda m: m.group(1) + m.group(2) + "17" + m.group(2),
+                  text
+              )
+
+              # Also handle Kotlin DSL's JavaVersion target declarations.
+              text = re.sub(
+                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)JavaVersion\.VERSION_1_8\b',
+                  r'\1JavaVersion.VERSION_17',
+                  text
+              )
+
+              # Add a Java 17 target to Android modules when compileOptions are missing.
+              if re.search(r'\bid\s*\(?\s*["\']com\.android\.(?:application|library)["\']', text):
+                  if "compileOptions" not in text:
+                      if path.name == "build.gradle.kts":
+                          block = """
+          android {
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+          """
+                      else:
+                          block = """
+          android {
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          """
+                      text += "\n" + block
+
+              if text != original:
+                  path.write_text(text)
+                  print(f"Updated {path.relative_to(root)}")
+              else:
+                  print(f"Checked {path.relative_to(root)}")
+
+          print("Gradle compatibility patch completed.")
+          PY
+
+          # Ensure Gradle uses the Android SDK installed on the runner.
+          echo "sdk.dir=$ANDROID_HOME" > "$PROJECT_DIR/local.properties"
+
           cd "$PROJECT_DIR"
+
           gradle --no-daemon assembleDebug
 
       - name: Upload APK
