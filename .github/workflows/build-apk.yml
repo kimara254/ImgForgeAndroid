@@ -32,18 +32,25 @@ jobs:
           mkdir -p extracted
           unzip -q ImgForgeAndroid_source.zip -d extracted
 
-      - name: Fix JVM Compatibility & Build APK
+      - name: Patch Java Compatibility & Build APK
         run: |
           PROJECT_DIR=$(find extracted -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1 | xargs dirname)
           echo "Found Gradle project at: $PROJECT_DIR"
           
-          # Automatically patch any Java 1.8 references in build files to Java 17 (fixed loop close with done)
-          find "$PROJECT_DIR" -name "build.gradle" -o -name "build.gradle.kts" | while read -r file; do
-            echo "Patching compatibility in $file"
-            sed -i 's/VERSION_1_8/VERSION_17/g' "$file"
-            sed -i 's/"1.8"/"17"/g' "$file"
-            sed -i "s/'1.8'/'17'/g" "$file"
-          done
+          # Use Python to safely and thoroughly update all Java 1.8 / compatibility targets to 17
+          python3 - <<EOF
+          import glob, re
+          for filepath in glob.glob('$PROJECT_DIR/**/build.gradle*', recursive=True):
+              with open(filepath, 'r') as f:
+                  text = f.read()
+              text = text.replace('VERSION_1_8', 'VERSION_17')
+              text = re.sub(r'(sourceCompatibility|targetCompatibility)\s*=?\s*([\'"])1\.8\2', r'\1 = \217\2', text)
+              text = re.sub(r'(sourceCompatibility|targetCompatibility)\s*=?\s*1\.8', r'\1 = 17', text)
+              text = re.sub(r'jvmTarget\s*=?\s*([\'"])1\.8\1', r'jvmTarget = \117\1', text)
+              with open(filepath, 'w') as f:
+                  f.write(text)
+          print("Successfully patched build files to Java 17 compatibility.")
+          EOF
 
           echo "sdk.dir=/usr/local/lib/android/sdk" > "$PROJECT_DIR/local.properties"
           cd "$PROJECT_DIR"
