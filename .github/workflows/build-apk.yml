@@ -32,15 +32,17 @@ jobs:
           mkdir -p extracted
           unzip -q ImgForgeAndroid_source.zip -d extracted
 
-      - name: Build debug APK
-        working-directory: extracted
+      - name: Find project root and build debug APK
         run: |
-          echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
+          PROJECT_DIR=$(find extracted -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1 | xargs dirname)
+          echo "Found Gradle project at: $PROJECT_DIR"
+          echo "sdk.dir=/usr/local/lib/android/sdk" > "$PROJECT_DIR/local.properties"
+          cd "$PROJECT_DIR"
           gradle --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ImgForge-debug-apk
-          path: extracted/app/build/outputs/apk/debug/app-debug.apk
+          path: "**/build/outputs/apk/debug/app-debug.apk"
           if-no-files-found: error
