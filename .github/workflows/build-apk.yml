@@ -37,13 +37,13 @@ jobs:
           PROJECT_DIR=$(find extracted -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1 | xargs dirname)
           echo "Found Gradle project at: $PROJECT_DIR"
           
-          # Automatically patch any Java 1.8 references in build files to Java 17 to match Kotlin
+          # Automatically patch any Java 1.8 references in build files to Java 17 (fixed loop close with done)
           find "$PROJECT_DIR" -name "build.gradle" -o -name "build.gradle.kts" | while read -r file; do
             echo "Patching compatibility in $file"
             sed -i 's/VERSION_1_8/VERSION_17/g' "$file"
             sed -i 's/"1.8"/"17"/g' "$file"
             sed -i "s/'1.8'/'17'/g" "$file"
-          end
+          done
 
           echo "sdk.dir=/usr/local/lib/android/sdk" > "$PROJECT_DIR/local.properties"
           cd "$PROJECT_DIR"
