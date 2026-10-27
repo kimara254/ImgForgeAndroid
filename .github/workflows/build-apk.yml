@@ -17,7 +17,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -29,122 +29,115 @@ jobs:
           gradle-version: '8.9'
 
       - name: Extract ImgForge source
-        run: |
-          set -eu
-          mkdir -p extracted
-          unzip -q ImgForgeAndroid_source.zip -d extracted
-
-      - name: Fix JVM targets and build APK
         shell: bash
         run: |
           set -euo pipefail
 
-          PROJECT_DIR="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)"
+          test -f ImgForgeAndroid_source.zip || {
+            echo "ERROR: ImgForgeAndroid_source.zip is missing."
+            exit 1
+          }
 
-          if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
-            echo "ERROR: Gradle project not found inside ImgForgeAndroid_source.zip"
-            echo "ZIP contents:"
-            unzip -l ImgForgeAndroid_source.zip
+          mkdir -p extracted
+          unzip -q ImgForgeAndroid_source.zip -d extracted
+
+      - name: Configure Java and Kotlin JVM 17
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_DIR="$(find extracted -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit | xargs -r dirname)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Gradle settings file not found."
             exit 1
           fi
 
-          echo "Gradle project: $PROJECT_DIR"
+          APP_FILE="$PROJECT_DIR/app/build.gradle.kts"
 
-          export PROJECT_DIR
+          if [ ! -f "$APP_FILE" ]; then
+            echo "ERROR: App Gradle file not found: $APP_FILE"
+            exit 1
+          fi
 
+          export APP_FILE
           python3 <<'PY'
           import os
-          import re
           from pathlib import Path
 
-          root = Path(os.environ["PROJECT_DIR"])
-          files = list(root.rglob("build.gradle")) + list(root.rglob("build.gradle.kts"))
+          path = Path(os.environ["APP_FILE"])
+          text = path.read_text()
 
-          if not files:
-              raise SystemExit("ERROR: No Gradle build files found.")
-
-          for path in files:
-              text = path.read_text()
-              original = text
-
-              # Normalize Java 8 compatibility constants.
-              text = text.replace("VERSION_1_8", "VERSION_17")
-
-              # Handle Java compatibility declarations in Groovy and Kotlin DSL.
-              text = re.sub(
-                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)JavaVersion\.VERSION_1_8\b',
-                  r'\1JavaVersion.VERSION_17',
-                  text
+          if "compileSdk = 35" not in text:
+              raise SystemExit(
+                  "ERROR: Expected compileSdk = 35 was not found. "
+                  "Refusing to guess where to insert settings."
               )
 
-              text = re.sub(
-                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)(["\'])1\.8\2',
-                  lambda m: m.group(1) + m.group(2) + "17" + m.group(2),
-                  text
-              )
-
-              text = re.sub(
-                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)1\.8\b',
-                  r'\g<1>17',
-                  text
-              )
-
-              # Handle Kotlin jvmTarget declarations using either quote style.
-              text = re.sub(
-                  r'(?m)^(\s*jvmTarget\s*=\s*)(["\'])1\.8\2',
-                  lambda m: m.group(1) + m.group(2) + "17" + m.group(2),
-                  text
-              )
-
-              # Also handle Kotlin DSL's JavaVersion target declarations.
-              text = re.sub(
-                  r'(?m)^(\s*(?:sourceCompatibility|targetCompatibility)\s*=\s*)JavaVersion\.VERSION_1_8\b',
-                  r'\1JavaVersion.VERSION_17',
-                  text
-              )
-
-              # Add a Java 17 target to Android modules when compileOptions are missing.
-              if re.search(r'\bid\s*\(?\s*["\']com\.android\.(?:application|library)["\']', text):
-                  if "compileOptions" not in text:
-                      if path.name == "build.gradle.kts":
-                          block = """
-          android {
+          if "compileOptions" not in text:
+              marker = "    compileSdk = 35\n"
+              addition = """
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
-          }
           """
-                      else:
-                          block = """
-          android {
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
+              text = text.replace(marker, marker + addition, 1)
+
+          if "kotlinOptions" not in text:
+              marker = "    compileSdk = 35\n"
+              addition = """
+              kotlinOptions {
+                  jvmTarget = "17"
               }
-          }
           """
-                      text += "\n" + block
+              text = text.replace(marker, marker + addition, 1)
 
-              if text != original:
-                  path.write_text(text)
-                  print(f"Updated {path.relative_to(root)}")
-              else:
-                  print(f"Checked {path.relative_to(root)}")
+          if "sourceCompatibility = JavaVersion.VERSION_17" not in text:
+              raise SystemExit("ERROR: Java 17 configuration was not applied.")
 
-          print("Gradle compatibility patch completed.")
+          if "targetCompatibility = JavaVersion.VERSION_17" not in text:
+              raise SystemExit("ERROR: Java target 17 was not applied.")
+
+          if 'jvmTarget = "17"' not in text:
+              raise SystemExit("ERROR: Kotlin JVM target 17 was not applied.")
+
+          path.write_text(text)
+          print("Verified Java source compatibility: 17")
+          print("Verified Java target compatibility: 17")
+          print("Verified Kotlin JVM target: 17")
+          print("Root Gradle file left unchanged.")
           PY
 
-          # Ensure Gradle uses the Android SDK installed on the runner.
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Project: $PROJECT_DIR"
+          echo "Java version:"
+          java -version
+
           echo "sdk.dir=$ANDROID_HOME" > "$PROJECT_DIR/local.properties"
 
           cd "$PROJECT_DIR"
-
           gradle --no-daemon assembleDebug
 
-      - name: Upload APK
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: Build finished without producing the expected APK."
+            find . -path '*/build/outputs/apk/*/*.apk' -print
+            exit 1
+          fi
+
+          echo "APK successfully created: $APK"
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: ImgForge-debug-apk
-          path: "**/build/outputs/apk/debug/app-debug.apk"
+          path: extracted/ImgForgeAndroid/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
